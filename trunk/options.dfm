@@ -3,7 +3,6 @@ object OptionDialog: TOptionDialog
   Top = 0
   Width = 434
   Height = 183
-  AlphaBlend = True
   AlphaBlendValue = 180
   Caption = 'Optionen'
   Color = clBtnFace

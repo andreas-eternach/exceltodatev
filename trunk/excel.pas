@@ -5,13 +5,13 @@
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  Foobar is distributed in the hope that it will be useful,
+//  exceltodatev is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU General Public License for more details.
 //
 //  You should have received a copy of the GNU General Public License
-//  along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+//  along with exceltodatev .  If not, see <http://www.gnu.org/licenses/>.
 //
 //(c) 1996-2009 Andreas Eternach (andreas.eternach@google.com)
 unit excel;
@@ -84,8 +84,11 @@ type
     k        : import;
     into     : Tinfo;
     isYearValid : boolean;
-    clStateError, clStateOk, clStateUnknown : TColor;
-    currSelectedYear : integer;
+    const clStateError : TColor = $9090FF;
+    const clStateOk : TColor = $90FF90;
+    const clStateUnknown : TColor = $90FFFF;
+
+    var currSelectedYear : integer;
     procedure ncactivate(var Msg : TMessage);message WM_NCACTIVATE;
     procedure ncc(var Msg : TMessage);message WM_NOTIFY;
     procedure setUiEnabledState(newState:boolean);
@@ -121,7 +124,7 @@ end;
 //testet Datum auf logische Gültigkeit
 procedure TForm1.DateTest (Date, Year, Meldung : string);
 var Jahr, Monat, Tag : integer;
-    Datum            : TDate;
+    Datum            : TDateTime;
 begin;
   try
     //nachsehen, ob jahr zwei oder 4stellig
@@ -134,7 +137,8 @@ begin;
     //Monate berechnen
     Monat := StrToInt (Copy (Date, 3, 2));
     //in Datum konvertieren
-    Datum := EncodeDate (Jahr, Monat, Tag);
+    if (not TryEncodeDate (Jahr, Monat, Tag, Datum)) then
+      raise EConvertError.Create(Format('Kein gültiges Datum: Jahr:%d, Monat:%d, Tag:%d', [Jahr, Monat, Tag]));
     //Exception abfangen und erneut auslösen
   except
     on EConvertError do
@@ -150,7 +154,7 @@ var wert : integer;
     temp : string;
 begin;
   try
-   wert:=StrToInt (s);
+   StrToInt (s);
   except
    on EConvertError do
     begin;
@@ -234,7 +238,7 @@ begin
     k.startzeitraum := stringkonvert(start.Text, C_DATE, 'Ungültiges Startdatum.');
     k.endezeitraum := stringkonvert(ende.Text, C_DATE, 'Ungültiges Endedatum.');
     k.bearbeiter := bearb.text;
-    k.jahr := stringkonvert(cbYears.SelText, C_YEAR, 'Ungültiges Jahr.');
+    k.jahr := stringkonvert(cbYears.Text, C_YEAR, 'Ungültiges Jahr.');
     k.vorlauf := stringkonvert(vorlauf.text, C_VORLNUMBER, 'Ungültige Vorlaufnummer.');
     k.beraternummer := '115024';
     //Datum auf logische Gültigkeit testen
@@ -329,13 +333,13 @@ mHandle :THandle; // Mutexhandle
 
 procedure TForm1.FormCreate(Sender: TObject);
 begin
+  // initialize basic constants / members
   isYearValid := false;
+
+  // initialize complex / dependent state of object / form
   ErrorLog:=TErrorLog.Create(Self);
   ErrorLog.Hide;
   fillControls;
-  clStateError := $9090FF;
-  clStateOk := $90FF90;
-  clStateUnknown := $90FFFF;
 end;
 
 procedure TForm1.fillControls();
@@ -395,7 +399,6 @@ end;
 
 procedure TForm1.cbYearsChange(Sender: TObject);
 var currMonthStart, nextMonthEnd  : TDateTime;
-    yearText : String;
     month : integer;
 begin
   try
