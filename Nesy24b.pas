@@ -5,13 +5,13 @@
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  Foobar is distributed in the hope that it will be useful,
+//  exceltodatev is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU General Public License for more details.
 //
 //  You should have received a copy of the GNU General Public License
-//  along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+//  along with exceltodatev .  If not, see <http://www.gnu.org/licenses/>.
 //
 //(c) 1996-2009 Andreas Eternach (andreas.eternach@google.com)
 
@@ -20,15 +20,23 @@ interface
 
 uses Windows, Messages, SysUtils, Classes, Graphics, Controls, Forms, Dialogs,
   StdCtrls, DdeMan, RegExpr;
+     type headerRecognizeColCmpCmd = (exactLowerCaseMatch, startLowerCaseMatch);
      type a=^w;
           b=^z;
           w=array[0..64000] of byte;
           z=array[0..1023] of byte;
-     const spalteninh : array[1..8] of string=('Datum','Gegenkonto','Konto','Soll',
-                                               'Haben','Text','Beleg1','Beleg2');
-
+     const colAddionsPrefix = 'zusatz:';
+     const dataColNames : array[1..9] of string=('Datum','Gegenkonto','Konto','Soll',
+                                               'Haben','Text','Beleg1','Beleg2', colAddionsPrefix);
+     const colHeadCmpCmd : array[1..9] of headerRecognizeColCmpCmd= (
+                                              exactLowerCaseMatch, exactLowerCaseMatch,
+                                              exactLowerCaseMatch, exactLowerCaseMatch,
+                                              exactLowerCaseMatch, exactLowerCaseMatch,
+                                              exactLowerCaseMatch, exactLowerCaseMatch,
+                                              startLowerCaseMatch);
 //Fehlertypen
 //~~~~~~~~~~~
+
 const INFO : integer = 0;
 const WARNING : integer = 1;
 const ERROR : integer = 2;
@@ -51,7 +59,8 @@ type import=class
 
 	  //fdatev,fverzeichnis        : file;
 	  nameexcel                  : string;
-	  datensatz                  : array[0..256] of byte;
+    const maxDatasetLength = 1024;
+	  var datensatz                  : array[0..maxDatasetLength] of byte;
 	  start                      : word;
 	  endsumme,fexcellang        : longint;
 	  zeile                      : integeR;
@@ -64,6 +73,12 @@ type import=class
 	  bele1,bele2, skont, kos1, kos2       : array[1..5] of byte;
 	  waehrun, kostmeng								: array[1..5] of byte;
 
+    // required for the additional information
+    const maxAdditionColIndex = 19;
+    var additionCols          : array[0..maxAdditionColIndex] of byte;
+    additionColCnt            : byte;
+    additionNames             : array[0..maxAdditionColIndex] of String;
+
 	  haben,soll,datum,gegenkonto,konto      : string[15];
 	  beleg1,beleg2                          : string;
 	  text                                   : string[255];
@@ -73,13 +88,13 @@ type import=class
 		Waehrung												: string [5];
 
      Ende                                     : boolean;
-	  startzeitraum,endezeitraum,beraternummer : string[6];
+ 	   startzeitraum,endezeitraum,beraternummer : string[6];
      bearbeiter,berater,mandant,vorlauf       : string[8];
      jahr                                     : string[3];
      daten         : a;
      verzeichnis   : b;
      handle        : integer;
-     //VCL-Objekte
+     //VCL-Objects for communication with MS-Excel.
      client                 : TDDeClientConv;
      client1                : TDDeClientConv;
      quelle                 : string;
@@ -87,7 +102,8 @@ type import=class
      aktspalte              : integer;
      mstring                : string;
      zeilenstring           : string;
-     //Funktionen
+
+     // application-logic related functions
      procedure   box;
      procedure   fehler(text : string; typ : integer);
      procedure   readywarten;
@@ -98,13 +114,14 @@ type import=class
      procedure   oeffneausgabe;
      procedure   speichergeben;
      procedure   schliesseausgabe;
-	  procedure   exportspeicherverzeichnis;
-	  procedure   exportspeicherdaten;
+     procedure   exportspeicherverzeichnis;
+	   procedure   exportspeicherdaten;
      procedure   schreibedaten;
      procedure   schreibeverzeichnis;
-     procedure   exportieren;
+     procedure   exportAdditions(additions : array of String);
+     procedure   exportDataset;
      procedure   exportsumme;
-	  procedure   rechnen;
+	   procedure   rechnen;
      procedure   lesen;
      function    istdatum (s,typ : string; meldung : string) : string;
      function    istzahl(s,typ : string; meldung : string) : string;
@@ -113,14 +130,15 @@ type import=class
      procedure   fehlersuchen;
      procedure   loeschen;
      procedure   konvertsatz;
-     procedure   importieren;
+     procedure   readAndExportOneDataset;
      procedure   importsatz;
      procedure   fortschritt;
      constructor create(handl : integer;quell : string;clien,clien1 : TDDeClientConv;templateDir,SaveDir : String);virtual;
-     procedure   execute;//TThreadoverride;
+     procedure   execute;
   end;
 
 implementation
+
 {******************Abbruch bei Fehler*******************}
 procedure import.Box;
 begin;
@@ -199,8 +217,6 @@ end;
 procedure import.speicherholen;
 var j : word;
 begin;
- //if maxavail<100000 then fehler('Nicht genÅgend freier Arbeitsspeicher');
- //noch Check auf Arbeitsspeicher einbinden
  getmem(daten,64000);
  getmem(verzeichnis,1024);
  for j:=64000 downto 0 do begin;
@@ -209,50 +225,55 @@ begin;
 end;
 {Dateien oeffnen}
 procedure import.oeffneeingabe;
-var a    : array[1..8] of byte;
-    i,i1 : integer;
-    s    : string;
+var dataColIndex    : array[Low(dataColNames)..High(dataColNames)] of byte;
+    dataColIter,excelColIter  : integer;
+    s               : string;
 begin;
  //******************Spalten auswerten*****************
  //Anzahl der Spalten bestimmen
- for i:=1 to 8 do begin;
-  a[i]:=0;
+ for dataColIter:=Low(dataColNames) to High(dataColNames) do begin;
+  dataColIndex[dataColIter]:=0;
  end;
- i1:=1;
+ excelColIter:=1;
  //nach betreffenden Spalten suchen
- while i1<20 do
+ while excelColIter<20 do
   begin;
    //in s spalteninhalt laden
    readywarten;
-   zeile:=1;aktspalte:=i1;
+   zeile:=1;aktspalte:=excelColIter;
    zellelesen;
    s:=mstring;
    //nach Feld suchen (z.B. Text --> Spalte 2)
-   for i:=1 to 8 do begin;
-    if (spalteninh[i] = s) then a[i]:=i1;
+   for dataColIter:=Low(dataColNames) to High(dataColNames) do begin;
+    case colHeadCmpCmd[dataColIter] of
+      exactLowerCaseMatch:
+        if (dataColNames[dataColIter] = s) then dataColIndex[dataColIter] := excelColIter;
+      startLowerCaseMatch:
+        if (Pos(LowerCase(dataColNames[dataColIter]), LowerCase(s)) = 1) then dataColIndex[dataColIter] := excelColIter;
+    end;
    end;
-   inc(i1);
+   inc(excelColIter);
   end;
  //Auswertung, wieviele spalten gelesen werden m¸ssen
  spaltenanz:=0;
  //die letzten beiden Schl¸sselworte sind Kann-Felder
- for i:=1 to 8 do begin;
-  if (a[i] > spaltenanz) then spaltenanz:=a[i];
+ for dataColIter:=Low(dataColNames) to High(dataColNames) do begin;
+  if (dataColIndex[dataColIter] > spaltenanz) then spaltenanz := dataColIndex[dataColIter];
   //die letzten beiden Schl¸sselworte sind Kann-Felder (Beleg1 und 2)
-  if ((a[i] = 0) and (i < 7)) then fehler('Fehler im Tabellenkopf.', SERROR);
+  if ((dataColIndex[dataColIter] = 0) and (dataColIter < 7)) then fehler('Fehler im Tabellenkopf.', SERROR);
  end;
  //********zeilen auswerten*******************
- s:=' ';i:=1;
+ s:=' ';dataColIter:=1;
  while ((s<>'')and(s<>'EndeDatensatz')) do
   begin;
    Readywarten;
-   zeile:=i;aktspalte:=1;
+   zeile:=dataColIter;aktspalte:=1;
    zellelesen;
    s:=mstring;
-   inc(i);
+   inc(dataColIter);
   end;
  if (s='') then fehler('kein EndeDatensatz oder leere Zelle.', SERROR);
- zeilanz:=i-1;
+ zeilanz:=dataColIter-1;
 end;
 {Datev-Datei oeffnen}
 procedure import.oeffneausgabe;
@@ -277,6 +298,10 @@ begin;
 	end;
   {Init Startparameter}
   start:=$5F;
+  {
+  old, hopefully obsolete format
+  start:=$5F;
+  }
 	try
 		fVerzeichnis := TFileStream.Create (templateDir + '\Ev01', fmOpenReadWrite);
 		fVerzeichnis.Read(verzeichnis^[1], 256);
@@ -327,6 +352,39 @@ end;
 procedure import.exportspeicherverzeichnis;
 var i : integer;
 begin;
+  // write worker
+  for i := 1 to 2 do
+    verzeichnis^[$89 + i - 1] := ord(bearbeiter[i]);
+
+  // write consultant number
+  for i := 1 to 6 do
+  begin
+    verzeichnis^[6 + i] := ord(beraternummer[i]);
+    verzeichnis^[$8B + i] := ord(beraternummer[i]);
+  end;
+
+  // write client number (only lowest 5 bytes)
+  while (length(mandant) < 5) do
+    mandant := '0' + mandant;
+  for i := 1 to 5 do
+    verzeichnis^[$92 + i - 1] := ord(mandant[Length(mandant) - 5 + i]);
+
+  // write starting date
+  for i := 1 to 6 do
+    verzeichnis^[$A0 + i] := ord(startzeitraum[i]);
+
+  // write ending date
+  for i := 1 to 6 do
+    verzeichnis^[$A6 + i] := ord(endezeitraum[i]);
+
+  // write vorlauf number
+  while (length(vorlauf) < 6) do
+    vorlauf := '0' + vorlauf;
+  for i := 1 to 6 do
+    verzeichnis^[$97 + i - 1] := ord(vorlauf[length(vorlauf) - 6 + i]);
+
+{
+ old, hopefully obsolete format
  for i:=1 to 6 do begin;
   if i<3 then verzeichnis^[i+$88]:=ord(bearbeiter[i]);
   if i<=5 then
@@ -337,11 +395,39 @@ begin;
   verzeichnis^[i+$A6]:=ord(endezeitraum[i]);//63
   verzeichnis^[i+$96]:=ord(vorlauf[i]);
  end;
+ }
 end;
 {******for File containing accounting data 'de001'}
 procedure import.exportspeicherdaten;
 var i : integer;
 begin;
+  // write worker
+  for i := 1 to 2 do
+    daten^[$09 + i - 1] := ord(bearbeiter[i]);
+
+  // write consultant number
+  for i := 1 to 6 do
+    daten^[$0C + i - 1] := ord(beraternummer[i]);
+
+  // write client number (only lowest 5 bytes)
+  for i := 1 to 5 do
+    daten^[$12 + i - 1] := ord(mandant[Length(mandant) - 5 + i]);
+
+  // write vorlauf number
+  for i := 1 to 6 do
+    daten^[$17 + i - 1] := ord(vorlauf[i]);
+
+  // write starting date
+  for i := 1 to 6 do
+    daten^[$1D + i - 1] := ord(startzeitraum[i]);
+
+  // write ending date
+  for i := 1 to 6 do
+    daten^[$23 + i - 1] := ord(endezeitraum[i]);
+
+
+ {
+ old, hopefully obsolete format.
  for i:=1 to 5 do begin;
   daten^[i+17]:=ord(mandant[i]);
   if i<3 then daten^[i+8]:=ord(bearbeiter[i]);
@@ -351,7 +437,9 @@ begin;
   daten^[i+34]:=ord(endezeitraum[i]);
   daten^[i+22]:=ord(vorlauf[i]);
  end;
+ }
 end;
+
 {*******************DateiSchreibefunktionen********************}
 { getestet fÅr start<64000=OK}
 procedure import.schreibedaten;
@@ -360,8 +448,6 @@ begin;
  {$I-}
  bloecke:=2*(trunc(start/256)+1);
  fDatev.Write(daten^[1], bloecke * 128);
- //blockwrite(fdatev,daten^[1], bloecke, Result);
- //if Result<>Bloecke then fehler('Kann nicht in Datei ''a:\de001'' schreiben.', SERROR);
  {$I+}
 end;
 {getestet=OK}
@@ -373,33 +459,96 @@ begin;
  //if Result<>2 then fehler('Kann nicht in Datei ''a:\dv01'' schreiben.', SERROR);
  {$I+}
 end;
+
+
+procedure import.exportAdditions(additions : array of String);
+var additionsIter : integer;
+	  cachedDataset : array[Low(datensatz)..High(Datensatz)] of byte;
+    strIter       : integer;
+begin
+  // cache the current dataset
+  move(datensatz, cachedDataset, Sizeof(datensatz));
+
+  for additionsIter := Low(additions) to High(additions) do
+  begin
+    if (Length(additions[additionsIter]) > 0) then
+    begin
+      for strIter := 0 to Length(additions[additionsIter]) do
+        datensatz[strIter] := ord(additions[additionsIter][strIter]);
+      datensatz[strIter] := 0;
+      exportDataset;
+    end;
+  end;
+
+  // restore the current dataset
+  move(cachedDataset, datensatz, Sizeof(cachedDataset));
+
+end;
+
 {*************************************************************}
 {sbetrag,hbetrag,gegenkonto,datum,konto,text}
-procedure import.exportieren;
-var laenge : byte;
-	 i      : integer;
-	 start_tmp : integer;
+procedure import.exportDataset;
+var laenge   : byte;
+	 i         : integer;
+   start_tmp : integer;
+   currDatasetIndex : integer;
 begin;
-      laenge := 0;
- for i:=1 to 255 do begin;
-  if datensatz[i]=0 then laenge:=i;
-  if datensatz[i]=0 then break;
+ laenge := 0;
+ // determine the length of the dataset
+ for i:=1 to maxDataSetLength do begin;
+  if datensatz[i]=0 then
+  begin
+    laenge:=i;
+    break;
+  end;
  end;
-
- //ist der Puffer im Speicher schon voll?
+ if (start+laenge+6>=64000) then
+  begin
+	  schreibedaten;
+	  //Speicherbereich auf 0 zur¸cksetzen
+	  for i := 0 to 64000 do
+    begin
+	   daten^[i]:=0;
+	  end;
+	  start:=0;
+  end;
+  currDatasetIndex := Low(datensatz) + 1;
+  while true do
+   begin
+    if datensatz[currDatasetIndex]= 0 then
+      break;
+    // set last 6 characters at zero to signal buffer overflow
+    if (start mod 256 >=251) then
+    begin
+      // fillup the remainder with zeros
+      while (start mod 256 <> 1) do
+      begin
+        daten^[start] := $00;
+        start := start + 1;
+      end;
+    end;
+    // assign the data
+    daten[start] := datensatz[currDatasetIndex];
+    // increase positions (is there a ++ Operator in pascal ?)
+    start := start + 1;
+    currDatasetIndex :=currDatasetIndex + 1;
+  end;    
+ // old, hopefully obsolete, splitting mechanism.
+ {
+ // is the mem-buffer full and needs to be flushed?
  if (start+laenge-2+5>=64000) then
   begin;
-	schreibedaten;
-	//Speicherbereich auf 0 zur¸cksetzen
-	for i := 0 to 64000 do begin;
-	 daten^[i]:=0;
-	end;
-	start:=0;
+	  schreibedaten;
+	  //Speicherbereich auf 0 zur¸cksetzen
+	  for i := 0 to 64000 do begin;
+	   daten^[i]:=0;
+	  end;
+	  start:=0;
   end;
 
  daten^[start]:=datensatz[1];
  inc(start);
-	if (trunc((start+laenge-2+5)/256))>trunc(start/256) then
+ if (trunc((start+laenge-2+5)/256))>trunc(start/256) then
 	begin;
 		start_tmp := start;
 		start:=(trunc(start/256)+1)*256+1;
@@ -411,7 +560,7 @@ begin;
 	for i:=2 to laenge-1 do begin;
 		daten^[start]:=datensatz[i];
 		inc(start);
-	end;
+	end;}
 end;
 
 procedure import.exportsumme;
@@ -429,7 +578,7 @@ begin;
  end;
  datensatz[15]:=ord('y');
  datensatz[16]:=ord('z');
- exportieren;
+ exportDataset;
  endsumme:=l;
 end;
 {**************************neu********************************}
@@ -605,8 +754,6 @@ begin;
 		end;	// StrLen > 12
     // must only contain chars of type (0-9, a-z, A-Z, $ & % * + - /)
     r := TRegExpr.Create;
-    //regexpStr := '([^\d,^[A-Z],^\$,^&,^%,^\*,^\+,^-,^/)';
-    //regexpStr := '([^\d,^A-Z,\$,&,%,+,-, ])';
     regexpStr := '([^\$,^&,^%,^\+,^\-,^\*,^0-9,^A-Z])';
     r.Expression := regexpStr;
     r.Exec(UpperCase(s));
@@ -725,11 +872,6 @@ begin;
 	Beleg1 := istzahl (Beleg1, 'Beleg', 'Beleg1 hat falsches Format');
 	Beleg2 := istzahl (Beleg2, 'Beleg', 'Beleg2 hat falsches Format');
 
-	{if ((Length(waehrung) <> 0) and ((waehrung <> 'D') and (waehrung <> 'E'))) then
-	begin;
-		fehler ('W‰hrungssymbol muss entweder D oder E sein.', ERROR);
-	end;}
-
 	if (text = '') then
 		fehler ('Buchungstext darf nicht leer sein.', ERROR);
 
@@ -741,7 +883,7 @@ begin;
   begin;
 	fehler('Haben- und Soll-Betrag sind angegeben.', ERROR);
   end;
- // gegenkonto darf ab jetzt auch leer sein.
+ // Empty value for field gegenkonto is not an error any more, datev now supports it.
  //if (gegenkonto='') then
  // begin;
  //	fehler('Gegenkonto ist nicht vorhanden.', ERROR);
@@ -918,51 +1060,71 @@ begin;
  datensatz[position+1]:=0;
 end;
 {importiert einen Datensatz}
-procedure import.importieren;
+const testerw : integer = 0;
+procedure import.readAndExportOneDataset;
 var i,i1  : integeR;
-	intDatum, intStart, intEnde : integer;
+    intDatum, intStart, intEnde : integer;
+    additionsIndex : integer;
+    additions : array[0..maxAdditionColIndex] of string;
 begin;
- loeschen;
- zeile:=zeile+1;
- //if filesize(fexcel)<=filepos(fexcel) then
- if (zeile>=zeilanz) then
+  loeschen;
+  zeile:=zeile+1;
+  if (zeile>=zeilanz) then
   begin;
-	exportsumme;
-	Ende:=true;
-	exit;
+	  exportsumme;
+	  Ende:=true;
+	  exit;
   end;
- zeilenende:=0;text:='';
- for i:=1 to 20 do begin;
-  {synchronize(}lesen{)};
-  if (lesestring='kein Datensatz') or (lesestring='EndeDatensatz') then break;//i:=20;
-  if datu[1]=i then datum:=lesestring;
-  if habe[1]=i then haben:=lesestring;
-  {alter Fehler : in Zeile 88 wird Wert von habe[i] Åberschrieben}
-  if sol[1]=i then soll:=lesestring;
-  if gegenkont[1]=i then gegenkonto:=lesestring;
-  if kont[1]=i then Konto:=lesestring;
-  if bele1[1]=i then
-  begin
-    Beleg1:=lesestring;
-  end;
-  if bele2[1]=i then beleg2:=lesestring;
-  if kos1[1]=i then Kost1:=lesestring;
-  if kos2[1]=i then Kost2:=lesestring;
-  if skont[1]=i then Skonto:=lesestring;
-  if waehrun[1] = i then Waehrung := lesestring;
-  if KostMeng [1] = i then KostMenge := lesestring;
 
-  i1:=0;
-  repeat;
-	inc(i1);
-	if (tex[i1]=i) and (length(text)<30) then text:=text+lesestring;
-  until (i1=5);
-  if zeilenende=1 then break;//i:=20;
- end;
- if (UpperCase(lesestring) <> 'KEIN DATENSATZ')
-	 and (UpperCase(lesestring) <> 'ENDEDATENSATZ') then
-  begin;
-	fehlersuchen;
+  // read one single line from the excel table.
+  text:='';
+  for i:=0 to maxAdditionColIndex do
+  begin
+    additions[i] := '';
+  end;
+  for i:=1 to 20 do begin;
+    if (lesestring='kein Datensatz') or (lesestring='EndeDatensatz') then break;
+    // get next col from cache.
+    lesen;
+
+    if (i = datu[1]) then datum:=lesestring;
+    if (i = habe[1]) then haben:=lesestring;
+    if (i = sol[1]) then soll:=lesestring;
+    if (i = gegenkont[1]) then gegenkonto:=lesestring;
+    if (i = kont[1]) then Konto:=lesestring;
+    if (i = bele1[1]) then
+    begin
+      Beleg1:=lesestring;
+    end;
+    if (i = bele2[1]) then beleg2:=lesestring;
+    if (i = kos1[1]) then Kost1:=lesestring;
+    if (i = kos2[1]) then Kost2:=lesestring;
+    if (i = skont[1]) then Skonto:=lesestring;
+    if (i = waehrun[1]) then Waehrung := lesestring;
+    if (i = KostMeng [1]) then KostMenge := lesestring;
+
+    // read Text-Columns.
+    i1:=0;
+    repeat;
+	    inc(i1);
+	    if (tex[i1]=i) and (length(text)<30) then text:=text+lesestring;
+    until (i1=5);
+
+    // read additional information.
+    for additionsIndex := 0 to additionColCnt do
+    begin
+      if (i = additionCols[additionsIndex]) then
+        additions[additionsIndex] := 'y' + char($B7) + additionNames[additionsIndex]
+               + char($1C) + char($B8) + lesestring + char($1C);
+    end;
+
+    // if the table has less then 20 columns we have to break here.
+    if zeilenende=1 then break;
+   end;
+   if (UpperCase(lesestring) <> 'KEIN DATENSATZ')
+	   and (UpperCase(lesestring) <> 'ENDEDATENSATZ') then
+   begin;
+	   fehlersuchen;
 
 	//Test auf das Datum - muss erweitert werden
 	intDatum := stringzahl(copy(datum,3,2)) * 100 + stringzahl(copy(datum, 1, 2));
@@ -974,7 +1136,8 @@ begin;
        begin;
         konvertsatz;
         rechnen;
-        exportieren;
+        exportDataset;
+        exportAdditions(additions);
        end;
     end
    else
@@ -982,11 +1145,14 @@ begin;
      fehler('Datum liegt nicht im Erfassungszeitraum. Beleg wird nicht mit exportiert.', WARNING);
     end;
   end;
- repeat;if zeilenende<>1 then lesen;until zeilenende=1;
+  // if the excel-table has more then 20 cols, then we need to read and ignore the remaining cols here.
+ repeat;
+   if zeilenende<>1 then lesen;
+ until zeilenende=1;
 end;
 {importiert tabellenkopf}
 procedure import.importsatz;
-var i,i1    : integer;
+var i,i1,additionsPos    : integer;
 	 fehlerstring : string;
 begin;
  {Werte fÅr importieren initialisieren}
@@ -995,7 +1161,7 @@ begin;
  //alle nicht notwendigen Arraywerte zur¸cksetzen
  bele1[1]:=0;
  bele2[1]:=0;
- for i:=1 to 4 do tex[i]:=0;
+ for i:=1 to maxAdditionColIndex do tex[i]:=0;
  //Spalten suchen
  for i:=1 to spaltenanz do begin;
   lesen;
@@ -1019,6 +1185,13 @@ begin;
 	 until (tex[i1] = 0) or (i1=5);
 	 if (tex[i1] = 0) then tex[i1]:=i;
 	end;
+  additionsPos := Pos(colAddionsPrefix, LowerCase(lesestring));
+  if (additionsPos = 1) and (additionColCnt <= maxAdditionColIndex) then
+	begin
+    additionCols[additionColCnt] := i;
+    additionNames[additionColCnt] := Copy(lesestring, Length(colAddionsPrefix) + 1, Length(lesestring) - Length(colAddionsPrefix));
+    additionColCnt := additionColCnt + 1;
+  end;
   if zeilenende = 1 then break;
  end;
  repeat;if zeilenende<>1 then lesen;until zeilenende=1;
@@ -1065,25 +1238,20 @@ end;
 {***************************Hauptprogramm************************}
 constructor import.create(handl : integer;quell : string;clien,clien1 : TDDeclientconv;templateDir,saveDir:String);
 begin;
- //TThreadinherited create(true);
  handle := handl;
  client := clien;
  client1 := clien1;
  quelle := quelle;
- //Init f¸r Fehlermeldungen - 16.7.
  fehlermeldungen := TStringList.Create;
  fehlertext := '';
  fehlercap := '';
  errors := false;
  warnings := false;
  infos := false;
- //Ende 16.7.
- //Errorlog soll standardm‰ﬂig vom Hauptprogramm angezeigt werden
  ShowErrorLog:=true;
- //Priorit‰t hoehersatzen
- //TThreadPriority:=tpTimeCritical;
  Self.templateDir := templateDir;
  Self.saveDir := saveDir;
+  additionColCnt := 0;
 end;
 
 procedure import.execute;
@@ -1097,11 +1265,11 @@ begin;
 	 speicherholen;
 	 {Dateien oeffnen}
 	 //TThread
-	 {synchronize(}oeffneeingabe{)};
-	 {synchronize(}oeffneausgabe{)};
+	 oeffneeingabe;
+	 oeffneausgabe;
 	 {Startfenster oeffnen}
 	 {Tabellenkopf importieren und in Speicher exportieren}
-	 {synchronize(}importsatz{)};
+	 importsatz;
 	 {Eingabe der Kopfdaten}
 	 {Jahr zuschreiben}
 	 startzeitraum:=startzeitraum+copy(jahr,1,2);
@@ -1110,12 +1278,9 @@ begin;
 	 {Exportieren der Kopfdaten}
 	 exportspeicherverzeichnis;
 	 exportspeicherdaten;
-	 {Fenster fÅr Import oeffnen}
 	 repeat;
-			  //TThread
-			  {synchronize(}importieren{)};
-			  {Prozente und aktuellen Datensatz ausgeben}
-			  fortschritt;
+     readAndExportOneDataset;
+     fortschritt;
 	 until (Ende=true);
 	 {Daten abspeichern}
 	 //TThread
@@ -1166,10 +1331,7 @@ begin;
 	fehlercap:='Fertig';
 	ShowErrorLog:=false;
   end;
- //TThread
  box;
  fertig:=true;
- //f¸r TThread
- //Terminate;
 end;
 end.
