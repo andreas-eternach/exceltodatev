@@ -133,7 +133,7 @@ type import=class
      procedure   readAndExportOneDataset;
      procedure   importsatz;
      procedure   fortschritt;
-     constructor create(handl : integer;quell : string;clien,clien1 : TDDeClientConv;templateDir,SaveDir : String);virtual;
+     constructor create(handl : integer;quell : string;clien,clien1 : TDDeClientConv;templateDir,saveDir,beraternr : string);virtual;
      procedure   execute;
   end;
 
@@ -754,12 +754,12 @@ begin;
 		end;	// StrLen > 12
     // must only contain chars of type (0-9, a-z, A-Z, $ & % * + - /)
     r := TRegExpr.Create;
-    regexpStr := '([^\$,^&,^%,^\+,^\-,^\*,^0-9,^A-Z])';
+    regexpStr := '([^\$,^&,^%,^\+,^\-,^\*,^0-9,^A-Z,^/])';
     r.Expression := regexpStr;
     r.Exec(UpperCase(s));
     if (r.MatchPos[0] <> -1) then
     begin
-      fehler ('Belege dürfen nur die Zeichen 0-9, a-z, A-Z, $, &, %, *, +, - beinhalten.', ERROR);
+      fehler ('Belege dürfen nur die Zeichen 0-9, a-z, A-Z, $, &, %, *, +, -, / beinhalten.', ERROR);
       fehler ('Fehlerhafter Beleg-Text ist:"' + s + '"', ERROR);
     end;
 	end // if typ = beleg
@@ -1236,12 +1236,13 @@ begin;
  PostMessage(Handle,55555,zeile,zeilanz);
 end;
 {***************************Hauptprogramm************************}
-constructor import.create(handl : integer;quell : string;clien,clien1 : TDDeclientconv;templateDir,saveDir:String);
+constructor import.create(handl : integer;quell : string;clien,clien1 : TDDeclientconv;templateDir,saveDir,beraternr : string);
 begin;
  handle := handl;
  client := clien;
  client1 := clien1;
  quelle := quelle;
+ beraterNummer := beraternr;
  fehlermeldungen := TStringList.Create;
  fehlertext := '';
  fehlercap := '';

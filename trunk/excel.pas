@@ -20,7 +20,7 @@ interface
 
 uses
   Windows, Messages, SysUtils, Classes, Graphics, Controls, Forms, Dialogs,
-  StdCtrls, DdeMan,nesy24b, ComCtrls,infos, Menus, options, DateUtils;
+  StdCtrls, DdeMan,nesy24b, ComCtrls,infos, Menus, options, DateUtils, RegExpr;
 
 //
 //Typen für Zahlenangaben im Hauptformular
@@ -58,6 +58,10 @@ type
     yearErrorText: TLabel;
     endeErrorText: TLabel;
     startErrorText: TLabel;
+    Label7: TLabel;
+    comboBeraterNr: TComboBox;
+    errBerater: TLabel;
+    procedure comboBeraterNrChange(Sender: TObject);
     procedure startChange(Sender: TObject);
     procedure startSelect(Sender: TObject);
     procedure endeSelect(Sender: TObject);
@@ -229,7 +233,9 @@ procedure TForm1.konvertieren(Sender: TObject);
 begin
   client1:=TDDeClientConv.create(self);
 
-  k:=import.create(Handle,'',client,client1, OptionDialog.getTemplateDir, OptionDialog.getSaveDir);
+  k:=import.create(Handle,'',client,client1,
+  OptionDialog.getTemplateDir, OptionDialog.getSaveDir,
+   getComboText(comboBeraterNr));
   try
     //Listboxinhalt prüfen
     if inhalt.ItemIndex = -1 then
@@ -240,7 +246,6 @@ begin
     k.bearbeiter := bearb.text;
     k.jahr := stringkonvert(cbYears.Text, C_YEAR, 'Ungültiges Jahr.');
     k.vorlauf := stringkonvert(vorlauf.text, C_VORLNUMBER, 'Ungültige Vorlaufnummer.');
-    k.beraternummer := '115024';
     //Datum auf logische Gültigkeit testen
     DateTest (k.startzeitraum, k.jahr, 'Ungültiges Startdatum (dieser Tag existiert nicht).');
     DateTest (k.endezeitraum, k.jahr, 'Ungültiges Endedatum (dieser Tag existiert nicht).');
@@ -502,6 +507,35 @@ end;
 procedure TForm1.startChange(Sender: TObject);
 begin
   checkDateCombo(start, startErrorText);
+end;
+
+procedure TForm1.comboBeraterNrChange(Sender: TObject);
+var errMsg,selBeraterNummer, regexpStr : string;
+   r : TRegExpr;
+begin
+  errMsg := '';
+  selBeraterNummer := getComboText(comboBeraterNr);
+  if (Length(selBeraterNummer) <> 6) then
+  begin
+    errMsg :='Berater-Nr muß 6-stellig sein.';
+  end else begin;
+    r := TRegExpr.Create;
+    regexpStr := '([^0-9])';
+    r.Expression := regexpStr;
+    r.Exec(UpperCase(selBeraterNummer));
+    if (r.MatchPos[0] <> -1) then
+    begin
+      errMsg := 'Berater-Nummer darf nur die Zeichen 0-9 enthalten.';
+    end;
+  end;
+
+  if (Length(errMsg)<>0) then
+  begin
+    errBerater.Caption := errMsg;
+    errBerater.Visible := true;
+  end else begin;
+    errBerater.Visible := false;
+  end
 end;
 
 initialization
